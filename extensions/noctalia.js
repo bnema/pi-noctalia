@@ -1,7 +1,7 @@
 import { existsSync, watch } from "node:fs";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 const THEME_SCHEMA =
 	"https://raw.githubusercontent.com/earendil-works/pi/main/packages/coding-agent/src/modes/interactive/theme/theme-schema.json";
@@ -23,60 +23,6 @@ const REQUIRED_NOCTALIA_KEYS = [
 	"mTertiary",
 ];
 
-const PI_COLOR_TOKENS = [
-	"accent",
-	"border",
-	"borderAccent",
-	"borderMuted",
-	"success",
-	"error",
-	"warning",
-	"muted",
-	"dim",
-	"text",
-	"thinkingText",
-	"selectedBg",
-	"userMessageBg",
-	"userMessageText",
-	"customMessageBg",
-	"customMessageText",
-	"customMessageLabel",
-	"toolPendingBg",
-	"toolSuccessBg",
-	"toolErrorBg",
-	"toolTitle",
-	"toolOutput",
-	"mdHeading",
-	"mdLink",
-	"mdLinkUrl",
-	"mdCode",
-	"mdCodeBlock",
-	"mdCodeBlockBorder",
-	"mdQuote",
-	"mdQuoteBorder",
-	"mdHr",
-	"mdListBullet",
-	"toolDiffAdded",
-	"toolDiffRemoved",
-	"toolDiffContext",
-	"syntaxComment",
-	"syntaxKeyword",
-	"syntaxFunction",
-	"syntaxVariable",
-	"syntaxString",
-	"syntaxNumber",
-	"syntaxType",
-	"syntaxOperator",
-	"syntaxPunctuation",
-	"thinkingOff",
-	"thinkingMinimal",
-	"thinkingLow",
-	"thinkingMedium",
-	"thinkingHigh",
-	"thinkingXhigh",
-	"bashMode",
-];
-
 function boolFromEnv(value, fallback) {
 	if (value === undefined) return fallback;
 	return !["0", "false", "no", "off"].includes(value.toLowerCase());
@@ -86,13 +32,9 @@ function getDefaultPiThemesDir() {
 	return join(homedir(), ".pi", "agent", "themes");
 }
 
-function isDefaultPiThemesDir(themeDir) {
-	return resolve(themeDir) === resolve(getDefaultPiThemesDir());
-}
-
 export function getNoctaliaConfig(env = process.env) {
 	const themeName = env.PI_NOCTALIA_THEME_NAME || "noctalia";
-	const outputDir = env.PI_NOCTALIA_THEME_DIR || getDefaultPiThemesDir();
+	const outputDir = getDefaultPiThemesDir();
 
 	return {
 		themeName,
@@ -165,7 +107,8 @@ export function convertNoctaliaColors(noctaliaColors, options = {}) {
 		onTertiary: c.mOnTertiary,
 		text: c.mOnSurface,
 		mutedText: c.mOnSurfaceVariant,
-		toolSuccessBg: blendHex(c.mSurfaceVariant, c.mSecondary, 0.16),
+		dimText: blendHex(c.mSurface, c.mOnSurfaceVariant, 0.78),
+		toolSuccessBg: blendHex(c.mSurfaceVariant, c.mSecondary, 0.1),
 		toolErrorBg: blendHex(c.mSurfaceVariant, c.mError, 0.18),
 		exportInfoBg: blendHex(c.mSurfaceVariant, c.mPrimary, 0.12),
 	};
@@ -179,7 +122,7 @@ export function convertNoctaliaColors(noctaliaColors, options = {}) {
 		error: "error",
 		warning: "primary",
 		muted: "mutedText",
-		dim: "outline",
+		dim: "dimText",
 		text: "text",
 		thinkingText: "mutedText",
 
@@ -230,11 +173,6 @@ export function convertNoctaliaColors(noctaliaColors, options = {}) {
 		bashMode: "secondary",
 	};
 
-	const missingPiTokens = PI_COLOR_TOKENS.filter((token) => !(token in colors));
-	if (missingPiTokens.length > 0) {
-		throw new Error(`Internal pi-noctalia error: missing Pi theme tokens ${missingPiTokens.join(", ")}`);
-	}
-
 	return {
 		$schema: THEME_SCHEMA,
 		name,
@@ -282,8 +220,25 @@ function notify(ctx, message, level = "info") {
 	ctx.ui?.notify?.(message, level);
 }
 
-export default async function piNoctalia(pi) {
-	const config = getNoctaliaConfig();
+function findWatchTarget(sourceDir) {
+	let current = sourceDir;
+	let missingChild = basename(sourceDir);
+
+	while (!existsSync(current)) {
+		const parent = dirname(current);
+		if (parent === current) return undefined;
+		missingChild = basename(current);
+		current = parent;
+	}
+
+	return {
+		dir: current,
+		isSourceDir: current === sourceDir,
+		triggerFileName: current === sourceDir ? undefined : missingChild,
+	};
+}
+
+export default async function piNoctalia(pi, config = getNoctaliaConfig()) {
 	let watcher = undefined;
 	let debounceTimer = undefined;
 
@@ -324,14 +279,20 @@ export default async function piNoctalia(pi) {
 
 		const sourceDir = dirname(config.sourcePath);
 		const sourceFile = basename(config.sourcePath);
-		if (!existsSync(sourceDir)) return;
+		const watchTarget = findWatchTarget(sourceDir);
+		if (!watchTarget) return;
 
-		watcher = watch(sourceDir, { persistent: false }, (_eventType, fileName) => {
-			if (fileName && fileName.toString() !== sourceFile) return;
+		watcher = watch(watchTarget.dir, { persistent: false }, (_eventType, fileName) => {
+			const changedFileName = fileName?.toString();
+			const expectedFileName = watchTarget.isSourceDir ? sourceFile : watchTarget.triggerFileName;
+			if (changedFileName && expectedFileName && changedFileName !== expectedFileName) return;
 
 			if (debounceTimer) clearTimeout(debounceTimer);
 			debounceTimer = setTimeout(async () => {
 				debounceTimer = undefined;
+				if (!watchTarget.isSourceDir && existsSync(sourceDir)) {
+					startWatcher(ctx);
+				}
 				try {
 					await syncAndMaybeApply(ctx);
 				} catch (error) {
@@ -341,16 +302,12 @@ export default async function piNoctalia(pi) {
 		});
 	}
 
-	// Best effort pre-sync so the theme exists before resource discovery in normal startup.
+	// Best effort pre-sync so the theme exists before session_start auto-apply.
 	try {
 		await syncNoctaliaTheme(config);
 	} catch {
 		// Reported later from session_start when UI is available.
 	}
-
-	pi.on("resources_discover", () => ({
-		themePaths: isDefaultPiThemesDir(config.outputDir) ? [] : [config.outputDir],
-	}));
 
 	pi.on("session_start", async (_event, ctx) => {
 		try {

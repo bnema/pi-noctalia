@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -118,26 +118,6 @@ function createCtx() {
 	};
 }
 
-async function withNoctaliaEnv(env, fn) {
-	const oldEnv = {};
-	for (const key of Object.keys(env)) {
-		oldEnv[key] = process.env[key];
-		process.env[key] = env[key];
-	}
-
-	try {
-		return await fn();
-	} finally {
-		for (const key of Object.keys(env)) {
-			if (oldEnv[key] === undefined) {
-				delete process.env[key];
-			} else {
-				process.env[key] = oldEnv[key];
-			}
-		}
-	}
-}
-
 async function waitForJsonFile(path, timeoutMs = 1500) {
 	const deadline = Date.now() + timeoutMs;
 	let lastError;
@@ -150,6 +130,15 @@ async function waitForJsonFile(path, timeoutMs = 1500) {
 		}
 	}
 	throw lastError;
+}
+
+async function waitForAppliedTheme(ctx, themeName, timeoutMs = 1500) {
+	const deadline = Date.now() + timeoutMs;
+	while (Date.now() < deadline) {
+		if (ctx.themes.includes(themeName)) return;
+		await new Promise((resolve) => setTimeout(resolve, 25));
+	}
+	assert.fail(`Timed out waiting for theme ${themeName} to be applied`);
 }
 
 test("convertNoctaliaColors creates a complete Pi theme", () => {
@@ -178,7 +167,6 @@ test("syncNoctaliaTheme writes atomically and skips unchanged output", async () 
 		const config = {
 			...getNoctaliaConfig({
 				NOCTALIA_COLORS_PATH: sourcePath,
-				PI_NOCTALIA_THEME_DIR: outputDir,
 				PI_NOCTALIA_THEME_NAME: "noctalia-test",
 			}),
 			sourcePath,
@@ -204,98 +192,89 @@ test("syncNoctaliaTheme writes atomically and skips unchanged output", async () 
 
 test("extension watcher syncs colors created after initial session_start failure", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-noctalia-"));
-	const sourcePath = join(dir, "colors.json");
+	const sourceDir = join(dir, "noctalia");
+	const sourcePath = join(sourceDir, "colors.json");
 	const outputDir = join(dir, "themes");
 	const outputPath = join(outputDir, "noctalia-late.json");
-
-	await withNoctaliaEnv(
-		{
+	const config = {
+		...getNoctaliaConfig({
 			NOCTALIA_COLORS_PATH: sourcePath,
-			PI_NOCTALIA_THEME_DIR: outputDir,
 			PI_NOCTALIA_THEME_NAME: "noctalia-late",
 			PI_NOCTALIA_AUTO_APPLY: "1",
 			PI_NOCTALIA_WATCH: "1",
-		},
-		async () => {
-			const { pi, handlers } = createPiHarness();
-			await piNoctalia(pi);
-			const ctx = createCtx();
+		}),
+		outputDir,
+		outputPath,
+	};
 
-			await handlers.get("session_start")({}, ctx);
-			assert.match(ctx.notifications.at(-1).message, /sync failed/);
+	const { pi, handlers } = createPiHarness();
+	let ctx;
+	try {
+		await piNoctalia(pi, config);
+		ctx = createCtx();
 
-			await writeFile(sourcePath, JSON.stringify(sampleColors), "utf8");
+		await handlers.get("session_start")({}, ctx);
+		assert.match(ctx.notifications.at(-1).message, /sync failed/);
 
-			const generated = await waitForJsonFile(outputPath);
-			assert.equal(generated.name, "noctalia-late");
-			assert.deepEqual(ctx.themes, ["noctalia-late"]);
+		await mkdir(sourceDir, { recursive: true });
+		await writeFile(sourcePath, JSON.stringify(sampleColors), "utf8");
 
-			handlers.get("session_shutdown")?.();
-		},
-	);
-
-	await rm(dir, { recursive: true, force: true });
+		const generated = await waitForJsonFile(outputPath);
+		assert.equal(generated.name, "noctalia-late");
+		await waitForAppliedTheme(ctx, "noctalia-late");
+	} finally {
+		handlers.get("session_shutdown")?.();
+		await rm(dir, { recursive: true, force: true });
+	}
 });
 
-test("resources_discover does not duplicate Pi's default global theme directory", async () => {
-	const dir = await mkdtemp(join(tmpdir(), "pi-noctalia-"));
-	const sourcePath = join(dir, "colors.json");
+test("getNoctaliaConfig writes to Pi's default global theme directory", () => {
+	const config = getNoctaliaConfig({ PI_NOCTALIA_THEME_NAME: "noctalia-default-dir" });
 
-	await withNoctaliaEnv(
-		{
-			NOCTALIA_COLORS_PATH: sourcePath,
-			PI_NOCTALIA_THEME_NAME: "noctalia-default-dir",
-		},
-		async () => {
-			const { pi, handlers } = createPiHarness();
-			await piNoctalia(pi);
-
-			assert.deepEqual(handlers.get("resources_discover")(), { themePaths: [] });
-		},
-	);
-
-	await rm(dir, { recursive: true, force: true });
+	assert.match(config.outputDir, /\.pi[/\\]agent[/\\]themes$/);
+	assert.match(config.outputPath, /noctalia-default-dir\.json$/);
 });
 
 test("/noctalia command reports status, syncs, and applies the generated theme", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "pi-noctalia-"));
-	const sourcePath = join(dir, "colors.json");
-	const outputDir = join(dir, "themes");
-	const outputPath = join(outputDir, "noctalia-command.json");
+	try {
+		const sourcePath = join(dir, "colors.json");
+		const outputDir = join(dir, "themes");
+		const outputPath = join(outputDir, "noctalia-command.json");
+		const config = {
+			...getNoctaliaConfig({
+				NOCTALIA_COLORS_PATH: sourcePath,
+				PI_NOCTALIA_THEME_NAME: "noctalia-command",
+				PI_NOCTALIA_AUTO_APPLY: "0",
+				PI_NOCTALIA_WATCH: "0",
+			}),
+			outputDir,
+			outputPath,
+		};
 
-	await withNoctaliaEnv(
-		{
-			NOCTALIA_COLORS_PATH: sourcePath,
-			PI_NOCTALIA_THEME_DIR: outputDir,
-			PI_NOCTALIA_THEME_NAME: "noctalia-command",
-			PI_NOCTALIA_AUTO_APPLY: "0",
-			PI_NOCTALIA_WATCH: "0",
-		},
-		async () => {
-			await writeFile(sourcePath, JSON.stringify(sampleColors), "utf8");
+		await writeFile(sourcePath, JSON.stringify(sampleColors), "utf8");
 
-			const { pi, commands } = createPiHarness();
-			await piNoctalia(pi);
-			const command = commands.get("noctalia");
-			assert.ok(command);
-			assert.deepEqual(command.getArgumentCompletions("a"), [{ value: "apply", label: "apply" }]);
+		const { pi, commands } = createPiHarness();
+		await piNoctalia(pi, config);
+		const command = commands.get("noctalia");
+		assert.ok(command);
+		assert.deepEqual(command.getArgumentCompletions("a"), [{ value: "apply", label: "apply" }]);
 
-			const ctx = createCtx();
-			await command.handler("status", ctx);
-			assert.match(ctx.notifications.at(-1).message, /Noctalia theme present/);
+		const ctx = createCtx();
+		await command.handler("status", ctx);
+		assert.match(ctx.notifications.at(-1).message, /Noctalia theme present/);
 
-			await command.handler("sync", ctx);
-			const synced = JSON.parse(await readFile(outputPath, "utf8"));
-			assert.equal(synced.name, "noctalia-command");
-			assert.deepEqual(ctx.themes, []);
+		await command.handler("sync", ctx);
+		const synced = JSON.parse(await readFile(outputPath, "utf8"));
+		assert.equal(synced.name, "noctalia-command");
+		assert.deepEqual(ctx.themes, []);
 
-			await command.handler("apply", ctx);
-			assert.deepEqual(ctx.themes, ["noctalia-command"]);
+		await command.handler("apply", ctx);
+		assert.deepEqual(ctx.themes, ["noctalia-command"]);
 
-			await command.handler("wat", ctx);
-			assert.equal(ctx.notifications.at(-1).level, "warning");
-		},
-	);
-
-	await rm(dir, { recursive: true, force: true });
+		await command.handler("wat", ctx);
+		assert.equal(ctx.notifications.at(-1).level, "warning");
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
 });
