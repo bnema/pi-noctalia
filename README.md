@@ -34,7 +34,6 @@ Set environment variables before starting Pi:
 | --- | --- | --- |
 | `NOCTALIA_COLORS_PATH` | `~/.config/noctalia/colors.json` | Source Noctalia colors file |
 | `PI_NOCTALIA_THEME_NAME` | `noctalia` | Generated Pi theme name |
-| `PI_NOCTALIA_THEME_DIR` | `~/.pi/agent/themes` | Directory for the generated theme JSON |
 | `PI_NOCTALIA_AUTO_APPLY` | `true` | Set `0` to sync without forcing the active theme |
 | `PI_NOCTALIA_WATCH` | `true` | Set `0` to disable the file watcher |
 
