@@ -1,0 +1,18 @@
+{
+  "name": "pi-noctalia",
+  "version": "0.1.0",
+  "description": "Pi package that syncs Noctalia colors into a Pi theme.",
+  "type": "module",
+  "keywords": ["pi-package", "pi", "theme", "noctalia"],
+  "license": "MIT",
+  "pi": {
+    "extensions": ["./extensions/noctalia.js"]
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "node --check extensions/noctalia.js && node --test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}
