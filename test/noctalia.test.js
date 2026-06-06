@@ -215,6 +215,7 @@ test("extension watcher syncs colors created after initial session_start failure
 
 		await handlers.get("session_start")({}, ctx);
 		assert.match(ctx.notifications.at(-1).message, /sync failed/);
+		assert.deepEqual(ctx.statuses, []);
 
 		await mkdir(sourceDir, { recursive: true });
 		await writeFile(sourcePath, JSON.stringify(sampleColors), "utf8");

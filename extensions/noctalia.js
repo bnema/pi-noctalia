@@ -316,7 +316,6 @@ export default async function piNoctalia(pi, config = getNoctaliaConfig()) {
 			notify(ctx, `Noctalia theme sync failed: ${formatError(error)}`, "error");
 		} finally {
 			startWatcher(ctx);
-			ctx.ui.setStatus?.("noctalia", `theme: ${config.themeName}`);
 		}
 	});
 
