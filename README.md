@@ -31,6 +31,16 @@ Set environment variables before starting Pi:
 | `PI_NOCTALIA_AUTO_APPLY` | `true` | Set `0` to sync without forcing the active theme |
 | `PI_NOCTALIA_WATCH` | `true` | Set `0` to disable the file watcher |
 
+## Commands
+
+```text
+/noctalia status
+/noctalia sync
+/noctalia apply
+```
+
+`status` reports source/output/theme state, `sync` regenerates the theme from Noctalia colors, and `apply` applies the generated Pi theme.
+
 ## Use
 
 Run Pi normally after installation. The extension updates the Pi theme from Noctalia when theme data is available.
